@@ -2,17 +2,19 @@ version: '3.8'
 
 services:
   postgres:
-    image: ankane/pgvector:latest
+    image: pgvector/pgvector:pg16
     container_name: zelta-stockscreener_postgres
     environment:
       POSTGRES_USER: dev_admin
-      POSTGRES_PASSWORD: market_pass_123
+      POSTGRES_PASSWORD: cookGuddi
       POSTGRES_DB: screener_db
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     restart: always
+    # 👇 This clean, one-liner cleanly registers pgvector on startup safely
+    entrypoint: [ "docker-entrypoint.sh", "postgres", "-c", "shared_preload_libraries=vector" ]
 
   redis:
     image: redis:7-alpine

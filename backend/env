@@ -1,1 +1,0 @@
-DATABASE_URL=postgresql://dev_admin:cookGuddi@localhost:5432/screener_db

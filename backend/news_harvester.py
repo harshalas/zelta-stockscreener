@@ -1,32 +1,61 @@
-import os
-import finnhub
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
+import os
+import requests
 
-load_dotenv()
+# 1. Your original partner logic MUST be present in the file:
+def fetch_news(ticker: str):
+    """Hits the live Finnhub API endpoint to pull company news for a given ticker."""
+    api_key = os.getenv("FINNHUB_API_KEY")
 
-finnhub_client = finnhub.Client(api_key=os.getenv("FINNHUB_API_KEY"))
-
-def fetch_news(ticker: str) -> list[dict]:
-    now = datetime.utcnow()
-    from_date = (now - timedelta(hours=48)).strftime("%Y-%m-%d")
-    to_date = now.strftime("%Y-%m-%d")
-
-    try:
-        articles = finnhub_client.company_news(ticker, _from=from_date, to=to_date)
-    except Exception as e:
-        print(f"Error fetching news for {ticker}: {e}")
+    if not api_key:
+        print("ERROR: FINNHUB_API_KEY environment variable is missing!")
         return []
 
-    cleaned = []
-    for article in articles:
-        cleaned.append({
-            "ticker": ticker,
-            "headline": article.get("headline", ""),
-            "summary": article.get("summary", ""),
-            "url": article.get("url", ""),
-            "published_at": datetime.fromtimestamp(article.get("datetime", 0))
-        })
+    # 📅 Dynamically calculate date windows (from 7 days ago until today)
+    today = datetime.now().strftime("%Y-%m-%d")
+    one_week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
 
-    print(f"Fetched {len(cleaned)} articles for {ticker}")
-    return cleaned
+    # The official Finnhub REST URL format
+    url = "https://finnhub.io/api/v1/company-news"
+    params = {
+        "symbol": ticker.upper(),
+        "from": one_week_ago,
+        "to": today,
+        "token": api_key,
+    }
+
+    try:
+        response = requests.get(url, params=params)
+        if response.status_code == 200:
+            return response.json()  # Returns the list of news articles
+        else:
+            print(
+                f"Finnhub API Error: {response.status_code} - {response.text}"
+            )
+            return []
+    except Exception as e:
+        print(f"Failed to fetch from Finnhub: {str(e)}")
+        return []
+
+
+# 2. The orchestrator wrapper that main.py calls:
+def harvest_and_pipeline_news(ticker: str):
+    """Orchestrates news fetching and vector embedding pipeline execution for a given symbol."""
+    symbol_upper = ticker.upper()
+    
+    # This calls the function directly above it in the same file
+    articles = fetch_news(symbol_upper)
+
+    if not articles:
+        return {"status": "no articles found", "ticker": symbol_upper}
+
+    # Delayed import locally to avoid any potential circular dependencies
+    from vector_pipeline import process_ticker
+
+    process_ticker(symbol_upper, articles)
+
+    return {
+        "status": "complete",
+        "ticker": symbol_upper,
+        "articles_processed": len(articles)
+    }

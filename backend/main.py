@@ -1,14 +1,23 @@
 from fastapi import FastAPI
+from pydantic import BaseModel
+from typing import List
 import yfinance as yf
 
-from news_harvester import fetch_news
-# Import your newly created service from scanner.py
+from dotenv import load_dotenv
+load_dotenv()
+
+# Clean local service imports (Notice fetch_news is NOT here)
+from news_harvester import harvest_and_pipeline_news
 from scanner import MarketScannerService
-from vector_pipeline import process_ticker
 
 app = FastAPI()
-# Initialize the scanner service engine
 scanner_service = MarketScannerService()
+
+
+# Pydantic Schemas for Validation
+class WatchlistRequest(BaseModel):
+    tickers: List[str]
+    volatility_threshold: float = 1.0
 
 
 @app.get("/api/v1/test-ticker/{symbol}")
@@ -21,38 +30,28 @@ async def test_ticker(symbol: str):
 
 @app.post("/api/v1/harvest/{ticker}")
 async def harvest_news(ticker: str):
-    articles = fetch_news(ticker.upper())
-    if not articles:
-        return {"status": "no articles found", "ticker": ticker}
-
-    process_ticker(ticker.upper(), articles)
-    return {
-        "status": "complete",
-        "ticker": ticker.upper(),
-        "articles_processed": len(articles),
-    }
+    # Business logic completely deferred to our background harvester service function
+    return harvest_and_pipeline_news(ticker)
 
 
-# NEW ROUTE: Volatility & Volume Scanner Endpoint
-@app.get("/api/v1/scan/{symbol}")
-async def scan_ticker(symbol: str):
-    # 1. Fetch enough historical days to calculate a rolling 20-day window
-    ticker = yf.Ticker(symbol.upper())
-    history = ticker.history(period="1mo")  # Fetches ~20-22 trading days
+@app.get("/api/v1/scan/history/{symbol}")
+async def get_single_ticker_history(symbol: str):
+    price_data = scanner_service.fetch_yfinance_data(symbol, period="3mo")
+    if len(price_data) < 20:
+        return {"error": f"Insufficient historical data for {symbol}."}
 
-    if history.empty or len(history) < 20:
-        return {
-            "error": f"Not enough historical data found for symbol {symbol}."
-        }
+    timeline = scanner_service.get_historical_metrics_series(price_data)
+    return {"ticker": symbol.upper(), "historical_timeline": timeline}
 
-    # 2. Transform the yfinance DataFrame into the list of dicts our service expects
-    price_data = []
-    for index, row in history.iterrows():
-        price_data.append({"close": float(row["Close"]), "volume": int(row["Volume"])})
 
-    # 3. Run your mathematical scanner engine
-    metrics = scanner_service.calculate_volatility_and_volume(
-        price_data, window=20
+@app.post("/api/v1/scan/morning-screener")
+async def morning_batch_screener(request: WatchlistRequest):
+    alerts = scanner_service.run_morning_screener(
+        request.tickers, request.volatility_threshold
     )
-
-    return {"ticker": symbol.upper(), "metrics": metrics}
+    return {
+        "status": "morning_scan_complete",
+        "volatility_threshold_used": request.volatility_threshold,
+        "matched_count": len(alerts),
+        "alerts": alerts,
+    }

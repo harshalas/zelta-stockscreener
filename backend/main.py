@@ -1,20 +1,26 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
+from contextlib import asynccontextmanager
 from typing import List
-import yfinance as yf
 
 from dotenv import load_dotenv
+from fastapi import FastAPI
+from pydantic import BaseModel
+import yfinance as yf
+
 load_dotenv()
 
-# Clean local service imports (Notice fetch_news is NOT here)
+from database import init_db, save_scan_results
 from news_harvester import harvest_and_pipeline_news
 from scanner import MarketScannerService
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()  # runs once when server starts
+    yield
+
+app = FastAPI(lifespan=lifespan)
 scanner_service = MarketScannerService()
 
 
-# Pydantic Schemas for Validation
 class WatchlistRequest(BaseModel):
     tickers: List[str]
     volatility_threshold: float = 1.0
@@ -30,7 +36,6 @@ async def test_ticker(symbol: str):
 
 @app.post("/api/v1/harvest/{ticker}")
 async def harvest_news(ticker: str):
-    # Business logic completely deferred to our background harvester service function
     return harvest_and_pipeline_news(ticker)
 
 
@@ -49,6 +54,7 @@ async def morning_batch_screener(request: WatchlistRequest):
     alerts = scanner_service.run_morning_screener(
         request.tickers, request.volatility_threshold
     )
+    save_scan_results(alerts)
     return {
         "status": "morning_scan_complete",
         "volatility_threshold_used": request.volatility_threshold,

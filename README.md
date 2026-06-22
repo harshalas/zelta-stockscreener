@@ -53,3 +53,8 @@ When `/api/v1/verification/database` returns recent rows, the storage path is wo
 ## Frontend
 
 The frontend is currently a placeholder shell and does not yet render the full dashboard described in the timeline.
+
+### Volume Anomaly Detection
+- **Endpoint:** `GET /api/v1/anomalies`
+- **Query params:** `tickers` (comma-separated), `threshold` (default: 1.5)
+- **Example:** `GET /api/v1/anomalies?tickers=TSLA,NVDA&threshold=1.5`

@@ -95,3 +95,28 @@ class MarketScannerService:
                 }
 
         return screened_alerts
+
+    def detect_volume_anomalies(self, tickers: list, adv_multiplier: float = 1.5):
+        """Detects volume spikes that exceed the ADV (Average Daily Volume) multiplier threshold."""
+        anomalies = {}
+
+        for symbol in tickers:
+            price_data = self.fetch_yfinance_data(symbol, period="1mo")
+            if len(price_data) < 20:
+                continue
+
+            latest_snapshot = self.calculate_volatility_and_volume(price_data)
+            volume_ratio = latest_snapshot.get("volume_spike_ratio", 0)
+
+            if volume_ratio >= adv_multiplier:
+                full_timeline = self.get_historical_metrics_series(price_data)
+                anomalies[symbol.upper()] = {
+                    "volume_ratio": volume_ratio,
+                    "current_close": latest_snapshot.get("current_close"),
+                    "annualized_volatility": latest_snapshot.get("annualized_volatility"),
+                    "threshold": adv_multiplier,
+                    "volume_spike_detected": True,
+                    "historical_timeline": full_timeline,
+                }
+
+        return anomalies

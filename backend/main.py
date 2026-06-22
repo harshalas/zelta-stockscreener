@@ -1,14 +1,13 @@
 from contextlib import asynccontextmanager
 from typing import List
-
 from dotenv import load_dotenv
 from fastapi import FastAPI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 import yfinance as yf
 
 load_dotenv()
 
-from database import get_database_verification_snapshot, init_db, save_scan_results
+from database import init_db, save_scan_results
 from news_harvester import harvest_and_pipeline_news
 from scanner import MarketScannerService
 
@@ -17,39 +16,16 @@ async def lifespan(app: FastAPI):
     init_db()  # runs once when server starts
     yield
 
-app = FastAPI(
-    lifespan=lifespan,
-    title="Zelta Stockscreener API",
-    description=(
-        "Use these endpoints in Swagger UI to verify live market fetches, "
-        "news ingestion, scanner output, and database persistence without "
-        "running shell scripts."
-    ),
-)
+app = FastAPI(lifespan=lifespan)
 scanner_service = MarketScannerService()
 
 
 class WatchlistRequest(BaseModel):
-    tickers: List[str] = Field(
-        ...,
-        examples=[["PLTR", "AAPL", "NVDA"]],
-        description="Tickers to scan in the batch run.",
-    )
-    volatility_threshold: float = Field(
-        1.0,
-        examples=[1.0],
-        description="Minimum annualized volatility required for a ticker to be included in alerts.",
-    )
+    tickers: List[str]
+    volatility_threshold: float = 1.0
 
 
-@app.get(
-    "/api/v1/test-ticker/{symbol}",
-    summary="Verify live yfinance connectivity",
-    description=(
-        "Use this endpoint in Swagger to confirm the API can reach yfinance and "
-        "retrieve the latest close price for a symbol."
-    ),
-)
+@app.get("/api/v1/test-ticker/{symbol}")
 async def test_ticker(symbol: str):
     ticker = yf.Ticker(symbol)
     history = ticker.history(period="1d")
@@ -57,28 +33,12 @@ async def test_ticker(symbol: str):
     return {"ticker": symbol, "live_price": float(current_price)}
 
 
-@app.post(
-    "/api/v1/harvest/{ticker}",
-    summary="Verify news ingestion and vector storage",
-    description=(
-        "Fetch Finnhub news for the ticker, chunk it, embed it, and store it in "
-        "PostgreSQL. Use the database verification endpoint afterward to confirm "
-        "rows were written."
-    ),
-)
+@app.post("/api/v1/harvest/{ticker}")
 async def harvest_news(ticker: str):
     return harvest_and_pipeline_news(ticker)
 
 
-@app.get(
-    "/api/v1/scan/history/{symbol}",
-    summary="Review computed scanner history",
-    description=(
-        "Return the rolling volatility and volume-ratio series calculated from "
-        "recent yfinance data. This helps verify the metric pipeline before the "
-        "batch screener is run."
-    ),
-)
+@app.get("/api/v1/scan/history/{symbol}")
 async def get_single_ticker_history(symbol: str):
     price_data = scanner_service.fetch_yfinance_data(symbol, period="3mo")
     if len(price_data) < 20:
@@ -88,15 +48,7 @@ async def get_single_ticker_history(symbol: str):
     return {"ticker": symbol.upper(), "historical_timeline": timeline}
 
 
-@app.post(
-    "/api/v1/scan/morning-screener",
-    summary="Run the morning screener",
-    description=(
-        "Pull yfinance data for the submitted tickers, compute annualized "
-        "volatility and volume ratio, filter the tickers that meet the threshold, "
-        "and save the results to PostgreSQL."
-    ),
-)
+@app.post("/api/v1/scan/morning-screener")
 async def morning_batch_screener(request: WatchlistRequest):
     alerts = scanner_service.run_morning_screener(
         request.tickers, request.volatility_threshold
@@ -110,14 +62,32 @@ async def morning_batch_screener(request: WatchlistRequest):
     }
 
 
-@app.get(
-    "/api/v1/verification/database",
-    summary="Verify database persistence",
-    description=(
-        "Return row counts and the most recent stored scan/news rows so you can "
-        "confirm data was written successfully from within Swagger UI. Add the "
-        "optional ticker query parameter to verify one symbol, such as BMO."
-    ),
-)
-async def verify_database(limit: int = 10, ticker: str | None = None):
-    return get_database_verification_snapshot(limit=limit, ticker=ticker)
+@app.get("/api/v1/anomalies")
+async def get_volume_anomalies(tickers: str = "AAPL,MSFT,GOOGL", threshold: float = 1.5):
+    """
+    Detect volume spikes that exceed the Average Daily Volume (ADV) multiplier threshold.
+    
+    Query Parameters:
+    - tickers: Comma-separated list of stock symbols (default: "AAPL,MSFT,GOOGL")
+    - threshold: ADV multiplier threshold (default: 1.5)
+    
+    Returns: List of detected volume anomalies with historical context.
+    """
+    ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+    
+    if not ticker_list:
+        return {
+            "status": "error",
+            "message": "No valid tickers provided",
+            "detected_count": 0,
+            "anomalies": {}
+        }
+    
+    anomalies = scanner_service.detect_volume_anomalies(ticker_list, threshold)
+    
+    return {
+        "status": "anomaly_detection_complete",
+        "threshold_multiplier": threshold,
+        "detected_count": len(anomalies),
+        "anomalies": anomalies,
+    }

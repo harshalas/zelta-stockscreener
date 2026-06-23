@@ -46,6 +46,18 @@ Use the built-in docs instead of shell scripts to confirm each stage of the pipe
 5. `GET /api/v1/verification/database`
 	- Confirms data persistence by returning row counts and recent rows from `market_scans` and `news_articles`.
 
+## Cache behavior in Swagger
+
+The API returns a `source` field on cache-aware endpoints so you can tell whether the response came from Redis or was fetched live.
+
+| Endpoint | Cache key pattern | TTL | Notes |
+|---|---|---|---|
+| `GET /api/v1/test-ticker/{symbol}` | `ticker:live:{symbol}` | 15s during market hours / 12h overnight | Smart intraday cache for live price checks |
+| `GET /api/v1/scan/history/{symbol}` | `ticker:history:{symbol}` | 1h | Historical metric timeline cached between refreshes |
+| `POST /api/v1/scan/morning-screener` | `screener:morning:matched` | 15m | Batch alert payload cached after scan |
+| `POST /api/v1/harvest/{ticker}` | `news:feed:{symbol}` | 30m | News ingestion result cached to avoid duplicate fetches |
+| `GET /api/v1/verification/database` | `verification:database:{ticker or all}:{limit}` | 60s | Short cache for repeated verification checks |
+
 ## Database verification
 
 When `/api/v1/verification/database` returns recent rows, the storage path is working end to end.

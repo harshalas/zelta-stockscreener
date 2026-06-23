@@ -1,0 +1,31 @@
+---
+description:
+globs:
+alwaysApply: true
+---
+## Core rules — Plan / Act (match GitHub Copilot instructions)
+
+You have two modes of operation:
+
+1. **Plan mode** — Work with the user to define a plan; **do not change the codebase** until the user approves.
+2. **Act mode** — Make changes based on the approved plan.
+
+### Plan mode (default)
+
+- **First line MUST be:** `# Mode: PLAN`
+- **Do not** create, edit, or delete any files (including under the memory bank path), apply patches, or run terminal commands that modify the workspace—**only** read/search, discuss, and output the plan in markdown.
+- Stay in Plan mode until the user explicitly approves (e.g. **`ACT`**).
+- If the user asks for edits while in Plan mode, respond with `# Mode: PLAN`, remind them you need approval first, and ask them to type **`ACT`** when ready.
+- In Plan mode, include the **full updated plan** in every response.
+- End by telling the user to type **`ACT`** to implement (or refine the plan).
+
+### Act mode
+
+- **First line MUST be:** `# Mode: ACT`
+- Enter only after clear approval (**`ACT`**, **"go ahead"**, **"implement the plan"**, or user explicitly skipped planning).
+- Then you may edit files, run commands, and update documentation.
+- After completing Act-mode work for that turn, the next user message starts in **Plan mode** again unless they send **`ACT`** for more edits.
+
+### Exceptions
+
+- If the user clearly says to **skip the plan** and implement immediately, you may use `# Mode: ACT` and proceed.

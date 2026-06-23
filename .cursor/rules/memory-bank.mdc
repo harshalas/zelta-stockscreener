@@ -1,0 +1,122 @@
+---
+description: Persistent project memory via markdown files (memory bank)
+globs:
+alwaysApply: true
+---
+# Cursor memory bank
+
+You are an AI assistant whose **session memory resets**. Treat the **memory bank** as the durable source of truth for project context. At the **start of every substantive task**, read **all** memory bank files under `./memory-bank/` — this is not optional when the task depends on project state.
+
+## Memory bank structure
+
+Core files (Markdown), in hierarchy order (all under `./memory-bank/`):
+
+```mermaid
+flowchart TD
+    PB[projectbrief.md] --> PC[productContext.md]
+    PB --> SP[systemPatterns.md]
+    PB --> TC[techContext.md]
+
+    PC --> AC[activeContext.md]
+    SP --> AC
+    TC --> AC
+
+    AC --> P[progress.md]
+```
+
+### Core files (required)
+
+1. `./memory-bank/projectbrief.md` — Scope, goals, source of truth for what “done” means.
+2. `./memory-bank/productContext.md` — Why the product exists, problems solved, UX goals.
+3. `./memory-bank/activeContext.md` — Current focus, recent changes, next steps, active decisions.
+4. `./memory-bank/systemPatterns.md` — Architecture, technical decisions, patterns, component relationships.
+5. `./memory-bank/techContext.md` — Stack, setup, constraints, dependencies.
+6. `./memory-bank/progress.md` — What works, what is left, status, known issues.
+
+### Additional context
+
+Add files or subfolders under `./memory-bank/` when useful (integrations, APIs, testing, deployment, etc.).
+
+## Workflows
+
+### Plan mode
+
+```mermaid
+flowchart TD
+    Start[Start] --> ReadFiles[Read memory bank]
+    ReadFiles --> CheckFiles{Files complete?}
+
+    CheckFiles -->|No| Plan[Create plan]
+    Plan --> Document[Document in chat]
+
+    CheckFiles -->|Yes| Verify[Verify context]
+    Verify --> Strategy[Develop strategy]
+    Strategy --> Present[Present approach]
+```
+
+### Act mode
+
+```mermaid
+flowchart TD
+    Start[Start] --> Context[Check memory bank]
+    Context --> Update[Update documentation]
+    Update --> Rules[Update .cursor/rules if needed]
+    Rules --> Execute[Execute task]
+    Execute --> Document[Document changes]
+```
+
+## Documentation updates
+
+Update the memory bank when:
+
+1. You discover new project patterns.
+2. You finish significant implementation work.
+3. The user asks to **update memory bank** — then **review every** memory bank file (even if most need no edit). Pay extra attention to `activeContext.md` and `progress.md`.
+4. Context is unclear and needs clarification.
+
+```mermaid
+flowchart TD
+    Start[Update process]
+
+    subgraph Process
+        P1[Review ALL files]
+        P2[Document current state]
+        P3[Clarify next steps]
+        P4[Update .cursor/rules if needed]
+    end
+
+    Start --> Process
+```
+
+## Project intelligence (`.cursor/rules`)
+
+Use `.cursor/rules` as a **learning journal**: preferences, non-obvious patterns, tooling, and decisions that are not already captured in code or the memory bank.
+
+```mermaid
+flowchart TD
+    Start{Discover new pattern}
+
+    subgraph Learn [Learning process]
+        D1[Identify pattern]
+        D2[Validate with user]
+        D3[Document in .cursor/rules]
+    end
+
+    subgraph Apply [Usage]
+        A1[Read .cursor/rules]
+        A2[Apply learned patterns]
+        A3[Improve future work]
+    end
+
+    Start --> Learn
+    Learn --> Apply
+```
+
+### What to capture
+
+- Critical implementation paths and conventions
+- User preferences and workflow
+- Project-specific patterns and pitfalls
+- How decisions evolved
+
+**Remember:** after a reset, the memory bank (and `.cursor/rules`) is your continuity. Keep them accurate and concise.

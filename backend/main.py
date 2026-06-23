@@ -3,7 +3,12 @@ from typing import List
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from pydantic import BaseModel
+from agents import run_agent_analysis
+from functools import partial
+import asyncio
 import yfinance as yf
+import psycopg2
+import os
 
 load_dotenv()
 
@@ -91,3 +96,41 @@ async def get_volume_anomalies(tickers: str = "AAPL,MSFT,GOOGL", threshold: floa
         "detected_count": len(anomalies),
         "anomalies": anomalies,
     }
+
+@app.post("/api/v1/analyse/{ticker}")
+async def analyse_ticker(ticker: str):
+    price_data = scanner_service.fetch_yfinance_data(ticker.upper(), period="3mo")
+    if len(price_data) < 20:
+        return {"error": f"Insufficient data for {ticker}"}
+
+    metrics = scanner_service.calculate_volatility_and_volume(price_data)
+
+    market_data = {
+        "current_price": metrics.get("current_close"),
+        "volume_spike_ratio": metrics.get("volume_spike_ratio"),
+        "annualized_volatility": metrics.get("annualized_volatility"),
+        "atr_14": metrics.get("annualized_volatility", 1.0),
+    }
+
+    db = psycopg2.connect(os.getenv("POSTGRES_URL"))
+    cursor = db.cursor()
+    cursor.execute("""
+        SELECT content_chunk FROM news_articles
+        WHERE ticker = %s
+        ORDER BY created_at DESC
+        LIMIT 10
+    """, (ticker.upper(),))
+    rows = cursor.fetchall()
+    cursor.close()
+    db.close()
+
+    news_chunks = [row[0] for row in rows]
+
+    # Run synchronous crew in a thread so it doesn't block the async event loop
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        partial(run_agent_analysis, ticker.upper(), market_data, news_chunks)
+    )
+
+    return result

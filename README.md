@@ -137,3 +137,22 @@ Reliability:
 - Isolated screener caches by tickers and threshold.
 - Prevented local model configuration from overwriting production credentials.
 - Normalized NumPy risk values before PostgreSQL persistence.
+
+
+July 16th - 18th:
+
+We replaced the three-agent workflow as the core analysis strategy with a deterministic engine that does not require local AI or a managed AI API. It evaluates moving averages, five-day movement, RSI, trading volume, volatility, and ATR to produce an explainable assessment.
+
+Each result now contains:
+
+- Bullish, Neutral, or Bearish assessment
+- Technical score and confidence
+- Plain-language reasons
+- Risk level and price-risk range
+- Indicators used
+- Market-data timestamp
+- Missing-news and stale-data warnings
+- Model version
+- Financial-information disclaimer
+
+The old CrewAI endpoint remains available as a deprecated experiment but is no longer loaded during normal backend startup. CrewAI was also removed from production requirements.

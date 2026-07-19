@@ -18,8 +18,6 @@ The backend product foundation is under construction. Authentication verificatio
 and analysis-job records now exist, but there is not yet a background worker or usable frontend.
 Creating a job currently records it as `queued`; it will not run until the worker is added.
 
-Do not expose the application publicly until the worker, frontend auth flow, access-control tests,
-rate limiting, and deployment safeguards are complete.
 
 ## Backend configuration
 

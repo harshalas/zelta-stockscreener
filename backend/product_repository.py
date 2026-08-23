@@ -4,6 +4,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 from config import get_settings
+from domain import AnalysisJobStatus, validate_analysis_job_transition
 
 
 def _connection():
@@ -70,7 +71,8 @@ def create_analysis_job(user_id: str, ticker: str) -> dict:
             """
             INSERT INTO analysis_jobs (id, user_id, ticker)
             VALUES (%s, %s, %s)
-            RETURNING id, ticker, status, error_code, error_message, created_at, started_at, completed_at
+            RETURNING id, ticker, status, error_code, error_message,
+                      created_at, updated_at, started_at, completed_at
             """,
             (str(job_id), user_id, ticker),
         )
@@ -81,10 +83,64 @@ def get_analysis_job(user_id: str, job_id: UUID) -> dict | None:
     with _connection() as connection, connection.cursor(cursor_factory=RealDictCursor) as cursor:
         cursor.execute(
             """
-            SELECT id, ticker, status, error_code, error_message, created_at, started_at, completed_at
+            SELECT id, ticker, status, error_code, error_message,
+                   created_at, updated_at, started_at, completed_at
             FROM analysis_jobs WHERE id = %s AND user_id = %s
             """,
             (str(job_id), user_id),
         )
         row = cursor.fetchone()
         return dict(row) if row else None
+
+
+def transition_analysis_job(
+    job_id: UUID,
+    next_status: AnalysisJobStatus | str,
+    *,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> dict:
+    with _connection() as connection, connection.cursor(cursor_factory=RealDictCursor) as cursor:
+        cursor.execute(
+            "SELECT status FROM analysis_jobs WHERE id = %s FOR UPDATE",
+            (str(job_id),),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise KeyError(f"Analysis job {job_id} was not found.")
+
+        target = validate_analysis_job_transition(row["status"], next_status)
+        if target == AnalysisJobStatus.FAILED and not error_message:
+            raise ValueError("A failed analysis job must include an error message.")
+
+        cursor.execute(
+            """
+            UPDATE analysis_jobs
+            SET status = %s,
+                error_code = CASE WHEN %s = 'failed' THEN %s ELSE NULL END,
+                error_message = CASE WHEN %s = 'failed' THEN %s ELSE NULL END,
+                started_at = CASE
+                    WHEN %s = 'gathering_data' THEN COALESCE(started_at, NOW())
+                    ELSE started_at
+                END,
+                completed_at = CASE
+                    WHEN %s IN ('complete', 'failed') THEN NOW()
+                    ELSE completed_at
+                END,
+                updated_at = NOW()
+            WHERE id = %s
+            RETURNING id, ticker, status, error_code, error_message,
+                      created_at, updated_at, started_at, completed_at
+            """,
+            (
+                target.value,
+                target.value,
+                error_code,
+                target.value,
+                error_message,
+                target.value,
+                target.value,
+                str(job_id),
+            ),
+        )
+        return dict(cursor.fetchone())

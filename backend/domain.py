@@ -1,9 +1,56 @@
 import json
 import re
+from enum import StrEnum
 
 
 TICKER_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,9}$")
 ASSESSMENTS = {"bullish", "neutral", "bearish"}
+
+
+class AnalysisJobStatus(StrEnum):
+    QUEUED = "queued"
+    GATHERING_DATA = "gathering_data"
+    READING_NEWS = "reading_news"
+    CALCULATING_RISK = "calculating_risk"
+    COMPLETE = "complete"
+    FAILED = "failed"
+
+
+ANALYSIS_JOB_TRANSITIONS = {
+    AnalysisJobStatus.QUEUED: {
+        AnalysisJobStatus.GATHERING_DATA,
+        AnalysisJobStatus.FAILED,
+    },
+    AnalysisJobStatus.GATHERING_DATA: {
+        AnalysisJobStatus.READING_NEWS,
+        AnalysisJobStatus.CALCULATING_RISK,
+        AnalysisJobStatus.FAILED,
+    },
+    AnalysisJobStatus.READING_NEWS: {
+        AnalysisJobStatus.CALCULATING_RISK,
+        AnalysisJobStatus.FAILED,
+    },
+    AnalysisJobStatus.CALCULATING_RISK: {
+        AnalysisJobStatus.COMPLETE,
+        AnalysisJobStatus.FAILED,
+    },
+    AnalysisJobStatus.COMPLETE: set(),
+    AnalysisJobStatus.FAILED: set(),
+}
+
+
+def validate_analysis_job_transition(
+    current: AnalysisJobStatus | str,
+    next_status: AnalysisJobStatus | str,
+) -> AnalysisJobStatus:
+    current_status = AnalysisJobStatus(current)
+    target_status = AnalysisJobStatus(next_status)
+    if target_status not in ANALYSIS_JOB_TRANSITIONS[current_status]:
+        raise ValueError(
+            f"Analysis job cannot transition from {current_status.value} "
+            f"to {target_status.value}."
+        )
+    return target_status
 
 
 def normalize_ticker(value: str) -> str:

@@ -270,10 +270,7 @@ Each result now contains:
 The old CrewAI endpoint remains available as a deprecated experiment but is no longer loaded during normal backend startup. CrewAI was also removed from production requirements.
 
 
-September 2026:
-
-This closed the loop the deterministic engine opened in July: the pieces that turn a scored
-assessment into a running product now exist and are tested.
+September Update:
 
 Analysis pipeline:
 - Added a deterministic news-sentiment scorer (`sentiment_engine.py`): cosine similarity between
@@ -306,4 +303,4 @@ Frontend:
 
 Deployment:
 - Added `backend/Dockerfile` for Render's free web-service tier, and documented a full free-tier
-  deployment path (Supabase + Upstash + Render + Vercel) in this README.
+  deployment path (Supabase + Upstash + Render + Vercel)

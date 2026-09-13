@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from typing import List
 from uuid import UUID
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 import yfinance as yf
@@ -15,7 +15,13 @@ load_dotenv()
 from cache_service import market_cache
 from analysis_engine import DeterministicAnalysisEngine
 from analysis_models import AnalysisResult
-from database import get_database_verification_snapshot, init_db, save_prediction, save_scan_results
+from database import (
+    get_database_verification_snapshot,
+    get_performance_summary,
+    init_db,
+    save_prediction,
+    save_scan_results,
+)
 from news_harvester import harvest_and_pipeline_news
 from scanner import MarketScannerService
 from auth import CurrentUser, get_current_user
@@ -29,6 +35,7 @@ from product_repository import (
     remove_watchlist_item,
 )
 from domain import morning_screener_cache_key, normalize_ticker, parse_assessment
+from analysis_job_worker import run_analysis_job
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -136,8 +143,14 @@ async def remove_stock(ticker: str, user: CurrentUser = Depends(get_current_user
 
 
 @app.post("/api/v1/analysis-jobs", status_code=status.HTTP_202_ACCEPTED, tags=["analysis"])
-async def queue_analysis(request: AnalysisJobRequest, user: CurrentUser = Depends(get_current_user)):
-    return create_analysis_job(user.id, request.ticker)
+async def queue_analysis(
+    request: AnalysisJobRequest,
+    background_tasks: BackgroundTasks,
+    user: CurrentUser = Depends(get_current_user),
+):
+    job = create_analysis_job(user.id, request.ticker)
+    background_tasks.add_task(run_analysis_job, job["id"], user.id, request.ticker)
+    return job
 
 
 @app.get("/api/v1/analysis-jobs/{job_id}", tags=["analysis"])
@@ -478,3 +491,18 @@ async def get_all_predictions():
         })
 
     return {"predictions": predictions}
+
+
+@app.get(
+    "/api/v1/predictions/performance",
+    tags=["analysis"],
+    summary="Backtested accuracy of past predictions",
+    description=(
+        "Aggregates every prediction backtest_engine.py has graded: hit-rate "
+        "(how often the directional call was right) and average absolute "
+        "error, plus how many predictions are still pending their 5-day "
+        "evaluation window."
+    ),
+)
+async def get_predictions_performance():
+    return get_performance_summary()

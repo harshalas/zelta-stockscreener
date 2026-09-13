@@ -3,13 +3,15 @@ from math import sqrt
 
 import pandas as pd
 
-from analysis_models import AnalysisResult, PriceRiskRange, TechnicalIndicators
+from analysis_models import AnalysisResult, PriceRiskRange, SourceEvidence, TechnicalIndicators
 
 
 class DeterministicAnalysisEngine:
     """Produces an explainable assessment from market data without an LLM."""
 
     MINIMUM_SESSIONS = 50
+    NEWS_UNAVAILABLE_WARNING = "News sentiment has not been evaluated for this analysis."
+    SENTIMENT_WEIGHT = 0.3
 
     def analyze(
         self,
@@ -49,7 +51,7 @@ class DeterministicAnalysisEngine:
         age_days = (generated_at.date() - data_timestamp.date()).days
         is_stale = age_days > 4
 
-        warnings = ["News sentiment has not been evaluated for this analysis."]
+        warnings = [self.NEWS_UNAVAILABLE_WARNING]
         status = "news_unavailable"
         if is_stale:
             status = "market_data_delayed"
@@ -77,6 +79,7 @@ class DeterministicAnalysisEngine:
             assessment=assessment,
             confidence=confidence,
             technical_score=round(score, 3),
+            overall_score=round(score, 3),
             risk_level=risk_level,
             risk_range=risk_range,
             reasons=self._plain_language_reasons(indicators),
@@ -92,6 +95,75 @@ class DeterministicAnalysisEngine:
             data_timestamp=data_timestamp,
             generated_at=generated_at,
             warnings=warnings,
+        )
+
+    def blend_sentiment(
+        self,
+        result: AnalysisResult,
+        *,
+        sentiment_score: float | None,
+        chunk_count: int,
+        sources: list[SourceEvidence],
+    ) -> AnalysisResult:
+        """Fold a vector-similarity news-sentiment score into a technical-only result.
+
+        This is intentionally a separate step from `analyze`, not baked into
+        it: scoring sentiment requires news that has already been harvested
+        and embedded (a network round trip), which the fast
+        `/analysis/preview` endpoint deliberately skips. Only the full
+        analysis-job worker calls this, after its "reading_news" stage, so
+        the cheap synchronous preview path never pays that cost.
+
+        `technical_score` is left untouched so callers can always see the
+        pure-technical figure the engine computed; `overall_score` is what
+        actually drives `assessment` once sentiment is folded in.
+        """
+        if sentiment_score is None or chunk_count == 0:
+            return result
+
+        overall_score = max(
+            -1.0,
+            min(
+                1.0,
+                (1 - self.SENTIMENT_WEIGHT) * result.technical_score
+                + self.SENTIMENT_WEIGHT * sentiment_score,
+            ),
+        )
+        assessment = (
+            "Bullish" if overall_score >= 0.25 else "Bearish" if overall_score <= -0.25 else "Neutral"
+        )
+
+        technical_leans_same_way = (result.technical_score > 0) == (sentiment_score > 0)
+        agreement_bonus = 0.05 if technical_leans_same_way and sentiment_score != 0 else 0.0
+        confidence = round(min(0.95, result.confidence + agreement_bonus), 2)
+
+        status = "complete" if result.status == "news_unavailable" else result.status
+        warnings = [warning for warning in result.warnings if warning != self.NEWS_UNAVAILABLE_WARNING]
+
+        sentiment_label = (
+            "bullish" if sentiment_score > 0.1 else "bearish" if sentiment_score < -0.1 else "mixed"
+        )
+        reasons = [
+            *result.reasons,
+            f"Recent news coverage ({chunk_count} article{'s' if chunk_count != 1 else ''}) "
+            f"skews {sentiment_label}.",
+        ]
+
+        return result.model_copy(
+            update={
+                "status": status,
+                "assessment": assessment,
+                "confidence": confidence,
+                "overall_score": round(overall_score, 3),
+                "macro_sentiment_score": round(sentiment_score, 3),
+                "reasons": reasons,
+                "indicators_used": [
+                    *result.indicators_used,
+                    "News sentiment (vector similarity to labeled reference headlines)",
+                ],
+                "sources": sources,
+                "warnings": warnings,
+            }
         )
 
     @staticmethod

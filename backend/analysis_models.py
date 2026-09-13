@@ -44,6 +44,8 @@ class AnalysisResult(BaseModel):
     assessment: Assessment
     confidence: float = Field(ge=0, le=1)
     technical_score: float = Field(ge=-1, le=1)
+    macro_sentiment_score: float | None = Field(None, ge=-1, le=1)
+    overall_score: float = Field(ge=-1, le=1, default=0)
     risk_level: RiskLevel
     risk_range: PriceRiskRange | None = None
     reasons: list[str]

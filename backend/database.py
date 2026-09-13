@@ -1,10 +1,15 @@
 import psycopg2
-import os
 from dotenv import load_dotenv
-from psycopg2.extras import execute_values
-from datetime import datetime, timedelta
+from psycopg2.extras import execute_values, RealDictCursor
+from datetime import date, datetime, timedelta
+
+from config import get_settings
 
 load_dotenv()
+
+
+def _connect():
+    return psycopg2.connect(get_settings().postgres_url)
 
 
 def init_db():
@@ -12,7 +17,7 @@ def init_db():
     Creates all required tables if they don't already exist.
     Runs automatically on server startup.
     """
-    db = psycopg2.connect(os.getenv("POSTGRES_URL"))
+    db = _connect()
     cursor = db.cursor()
     cursor.execute("CREATE EXTENSION IF NOT EXISTS vector;")
 
@@ -131,7 +136,7 @@ def save_scan_results(alerts: dict):
             )
         )
 
-    db = psycopg2.connect(os.getenv("POSTGRES_URL"))
+    db = _connect()
     try:
         cursor = db.cursor()
         execute_values(cursor, query, records)
@@ -147,7 +152,7 @@ def save_scan_results(alerts: dict):
 
 def get_database_verification_snapshot(limit: int = 10, ticker: str | None = None):
     """Return a compact snapshot of recently stored rows for Swagger-based verification."""
-    db = psycopg2.connect(os.getenv("POSTGRES_URL"))
+    db = _connect()
     cursor = db.cursor()
 
     try:
@@ -251,7 +256,7 @@ def get_database_verification_snapshot(limit: int = 10, ticker: str | None = Non
 
 
 def save_prediction(ticker: str, market_data: dict, agent_result: dict):
-    db = psycopg2.connect(os.getenv("POSTGRES_URL"))
+    db = _connect()
     cursor = db.cursor()
 
     # Pre-calculate evaluation target (5 calendar days out)
@@ -301,3 +306,169 @@ def save_prediction(ticker: str, market_data: dict, agent_result: dict):
     db.close()
 
     return generated_id
+
+
+def _parse_embedding(raw: str | list[float]) -> list[float]:
+    """psycopg2 has no built-in pgvector type, so a `vector` column comes back
+    as its Postgres text form, e.g. "[0.01,-0.02,...]". Parse that back into
+    floats; if some future driver upgrade already hands us a list, pass it
+    through untouched."""
+    if isinstance(raw, list):
+        return [float(value) for value in raw]
+    return [float(value) for value in raw.strip("[]").split(",") if value]
+
+
+def has_fresh_news(ticker: str, *, within_minutes: int = 120) -> bool:
+    """True if we've harvested this ticker recently enough to skip re-harvesting.
+
+    Keeps the analysis-job worker from calling Finnhub + re-embedding the
+    same headlines (and growing news_articles unnecessarily) every time
+    someone re-runs an analysis on the same stock within a couple of hours.
+    """
+    db = _connect()
+    cursor = db.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT 1 FROM news_articles
+            WHERE ticker = %s AND created_at >= NOW() - (%s || ' minutes')::INTERVAL
+            LIMIT 1
+            """,
+            (ticker.upper(), within_minutes),
+        )
+        return cursor.fetchone() is not None
+    finally:
+        cursor.close()
+        db.close()
+
+
+def fetch_recent_news_chunks(ticker: str, *, limit: int = 15, lookback_days: int = 7) -> list["NewsChunk"]:
+    """Pull the most recent embedded news chunks for a ticker.
+
+    Used by sentiment_engine.score_news -- this is read-only and returns
+    plain NewsChunk records; it does no scoring itself.
+    """
+    from sentiment_engine import NewsChunk
+
+    db = _connect()
+    cursor = db.cursor(cursor_factory=RealDictCursor)
+    try:
+        cursor.execute(
+            """
+            SELECT headline, url, published_at, embedding
+            FROM news_articles
+            WHERE ticker = %s AND created_at >= NOW() - (%s || ' days')::INTERVAL
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (ticker.upper(), lookback_days, limit),
+        )
+        rows = cursor.fetchall()
+    finally:
+        cursor.close()
+        db.close()
+
+    return [
+        NewsChunk(
+            headline=row["headline"],
+            url=row["url"],
+            published_at=row["published_at"],
+            embedding=_parse_embedding(row["embedding"]),
+        )
+        for row in rows
+        if row["embedding"] is not None
+    ]
+
+
+def fetch_due_predictions(as_of: date) -> list[dict]:
+    """Predictions whose 5-day evaluation window has arrived and that made
+    a directional call worth grading (Neutral calls have no predicted_price
+    and are intentionally excluded -- there's nothing to check them against).
+    """
+    db = _connect()
+    cursor = db.cursor(cursor_factory=RealDictCursor)
+    try:
+        cursor.execute(
+            """
+            SELECT id, ticker, current_price, predicted_price, target_eval_date
+            FROM predictions
+            WHERE is_evaluated = FALSE
+              AND target_eval_date IS NOT NULL
+              AND target_eval_date <= %s
+              AND predicted_price IS NOT NULL
+              AND current_price IS NOT NULL
+            ORDER BY target_eval_date
+            """,
+            (as_of,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        cursor.close()
+        db.close()
+
+
+def record_backtest_result(
+    prediction_id: int,
+    *,
+    actual_close_price: float,
+    absolute_error_pct: float,
+    is_correct_direction: bool,
+) -> None:
+    db = _connect()
+    cursor = db.cursor()
+    try:
+        cursor.execute(
+            """
+            UPDATE predictions
+            SET actual_close_price = %s,
+                absolute_error_pct = %s,
+                is_correct_direction = %s,
+                is_evaluated = TRUE
+            WHERE id = %s
+            """,
+            (actual_close_price, absolute_error_pct, is_correct_direction, prediction_id),
+        )
+        db.commit()
+    finally:
+        cursor.close()
+        db.close()
+
+
+def get_performance_summary() -> dict:
+    """Aggregate hit-rate and average error across every graded prediction.
+
+    This is the number that actually answers "does the model work" --
+    everything else in the pipeline is inputs and process; this is the
+    output that matters.
+    """
+    db = _connect()
+    cursor = db.cursor(cursor_factory=RealDictCursor)
+    try:
+        cursor.execute(
+            """
+            SELECT
+                COUNT(*) FILTER (WHERE is_evaluated) AS evaluated_count,
+                COUNT(*) FILTER (WHERE NOT is_evaluated) AS pending_count,
+                COUNT(*) FILTER (WHERE is_evaluated AND is_correct_direction) AS correct_count,
+                AVG(absolute_error_pct) FILTER (WHERE is_evaluated) AS avg_absolute_error_pct
+            FROM predictions
+            WHERE target_eval_date IS NOT NULL
+            """
+        )
+        row = dict(cursor.fetchone())
+    finally:
+        cursor.close()
+        db.close()
+
+    evaluated = row["evaluated_count"] or 0
+    correct = row["correct_count"] or 0
+    avg_error = (
+        float(row["avg_absolute_error_pct"]) if row["avg_absolute_error_pct"] is not None else None
+    )
+    return {
+        "evaluated_count": evaluated,
+        "pending_count": row["pending_count"] or 0,
+        "correct_count": correct,
+        "hit_rate": round(correct / evaluated, 3) if evaluated else None,
+        "avg_absolute_error_pct": round(avg_error, 2) if avg_error is not None else None,
+    }

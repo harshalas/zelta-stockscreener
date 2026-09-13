@@ -1,8 +1,11 @@
+import json
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import psycopg2
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import Json, RealDictCursor
 
+from analysis_models import AnalysisResult
 from config import get_settings
 from domain import AnalysisJobStatus, validate_analysis_job_transition
 
@@ -83,9 +86,14 @@ def get_analysis_job(user_id: str, job_id: UUID) -> dict | None:
     with _connection() as connection, connection.cursor(cursor_factory=RealDictCursor) as cursor:
         cursor.execute(
             """
-            SELECT id, ticker, status, error_code, error_message,
-                   created_at, updated_at, started_at, completed_at
-            FROM analysis_jobs WHERE id = %s AND user_id = %s
+            SELECT aj.id, aj.ticker, aj.status, aj.error_code, aj.error_message,
+                   aj.created_at, aj.updated_at, aj.started_at, aj.completed_at,
+                   p.result_payload AS result
+            FROM analysis_jobs aj
+            LEFT JOIN predictions p ON p.analysis_job_id = aj.id
+            WHERE aj.id = %s AND aj.user_id = %s
+            ORDER BY p.created_at DESC NULLS LAST
+            LIMIT 1
             """,
             (str(job_id), user_id),
         )
@@ -144,3 +152,71 @@ def transition_analysis_job(
             ),
         )
         return dict(cursor.fetchone())
+
+
+def _directional_levels(result: AnalysisResult) -> tuple[float | None, float | None]:
+    """(predicted_price, stop_loss) implied by the model's own risk range.
+
+    Bullish: target is the top of the range, stop-loss protects the bottom.
+    Bearish: target is the bottom of the range, stop-loss protects the top.
+    Neutral: no directional call was made, so there's nothing to grade later
+    -- both come back None and the backtest engine skips the row.
+    """
+    if result.risk_range is None:
+        return None, None
+    if result.assessment == "Bullish":
+        return result.risk_range.upper, result.risk_range.lower
+    if result.assessment == "Bearish":
+        return result.risk_range.lower, result.risk_range.upper
+    return None, None
+
+
+def save_analysis_result(
+    *,
+    user_id: str,
+    job_id: UUID,
+    ticker: str,
+    current_price: float | None,
+    volume_spike_ratio: float | None,
+    result: AnalysisResult,
+) -> int:
+    """Persist a completed AnalysisResult so it can be read back by
+    get_analysis_job and later graded by backtest_engine.py."""
+    predicted_price, stop_loss = _directional_levels(result)
+    target_eval_date = (datetime.now(timezone.utc) + timedelta(days=5)).date()
+
+    with _connection() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            INSERT INTO predictions (
+                ticker, user_id, analysis_job_id, current_price, predicted_price,
+                volume_spike_ratio, atr_14, final_bias, confidence_score,
+                calculated_stop_loss, risk_rationale, model_version, result_status,
+                source_evidence, warnings, result_payload, input_data_timestamp,
+                target_eval_date
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                ticker,
+                user_id,
+                str(job_id),
+                current_price,
+                predicted_price,
+                volume_spike_ratio,
+                result.indicators.atr_14,
+                result.assessment.lower(),
+                result.confidence,
+                stop_loss,
+                " ".join(result.reasons),
+                result.model_version,
+                result.status,
+                Json([source.model_dump(mode="json") for source in result.sources]),
+                Json(result.warnings),
+                Json(json.loads(result.model_dump_json())),
+                result.data_timestamp,
+                target_eval_date,
+            ),
+        )
+        return cursor.fetchone()[0]
